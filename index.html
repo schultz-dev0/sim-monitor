@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Sim Monitor</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --ink: #16181d; --muted: #646b78; --line: #e2e5ea;
+  --accent: #2f6fdb; --ok: #1f8a4c; --warn: #b26a00; --bad: #c0392b;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111317; --card: #1a1d23; --ink: #e8eaee; --muted: #9aa1ad; --line: #2a2f37;
+    --accent: #6c9ef0; --ok: #4cc27f; --warn: #e3a440; --bad: #ef6f62;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin-bottom: 16px; }
+h1 { font-size: 1.4rem; margin: 0; word-break: break-all; }
+h2 { font-size: 1rem; margin: 28px 0 10px; color: var(--muted); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; }
+.host { color: var(--muted); font-size: .9rem; }
+.caseline { font-size: 1.1rem; font-weight: 600; margin: -6px 0 14px; }
+.caseline .host { font-weight: 400; margin-left: 8px; }
+tr.current td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.pill { font-size: .8rem; font-weight: 600; padding: 2px 10px; border-radius: 99px;
+  border: 1px solid currentColor; }
+.pill.running { color: var(--accent); } .pill.finished { color: var(--ok); }
+.pill.stopped, .pill.stale { color: var(--warn); } .pill.error { color: var(--bad); }
+.banner { background: var(--card); border: 1px solid var(--warn); border-left-width: 4px;
+  padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.stat .k { color: var(--muted); font-size: .8rem; }
+.stat .v { font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 14px; }
+.bar > div { height: 100%; background: var(--accent); width: 0; transition: width .6s; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+figure { margin: 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+figure img { display: block; width: 100%; height: auto; cursor: zoom-in; background: #fff; }
+figcaption { padding: 8px 12px; font-size: .9rem; color: var(--muted); }
+.tablewrap { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; font-size: .85rem; }
+tr:last-child td { border-bottom: 0; }
+.down { color: var(--ok); } .up { color: var(--bad); }
+.empty { color: var(--muted); }
+footer { margin-top: 32px; color: var(--muted); font-size: .8rem; }
+#zoom { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: flex; align-items: center;
+  justify-content: center; padding: 16px; cursor: zoom-out; }
+#zoom img { max-width: 100%; max-height: 100%; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="sim">Loading…</h1>
+    <span id="pill" class="pill"></span>
+    <span id="host" class="host"></span>
+  </header>
+  <div id="caseline" class="caseline" hidden></div>
+  <div id="banner" class="banner" hidden></div>
+  <section class="stats" id="stats"></section>
+  <div class="bar" id="barwrap" hidden><div id="bar"></div></div>
+
+  <div id="polarsec" hidden>
+    <h2>Polar – finished cases</h2>
+    <div id="polar"></div>
+  </div>
+
+  <h2>Monitors – latest values</h2>
+  <div id="tables"></div>
+
+  <h2>Plots</h2>
+  <div class="grid" id="plots"></div>
+
+  <h2>Scenes</h2>
+  <div class="grid" id="scenes"></div>
+
+  <footer>Auto-refreshes every minute. GitHub Pages can lag a few minutes behind the PC.</footer>
+</main>
+<div id="zoom" hidden><img alt=""></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const safe = s => s.replace(/[^A-Za-z0-9._-]+/g, "_");
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let current = null;
+
+function dur(sec) {
+  if (!isFinite(sec) || sec < 0) return "–";
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+}
+const fmt = v => Math.abs(v) >= 1e4 || (Math.abs(v) < 1e-2 && v !== 0) ? v.toExponential(3) : (+v.toPrecision(5)).toString();
+
+function stat(k, v) { return `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`; }
+
+function renderStatus(s) {
+  const now = Date.now(), age = (now - s.updatedAt) / 1000;
+  const staleAfter = (s.exportEveryMin * 2 + 15) * 60;
+  const stale = s.state === "running" && age > staleAfter;
+  const state = stale ? "stale" : s.state;
+  document.title = `${s.sim} · ${state}`;
+  $("sim").textContent = s.sim;
+  $("host").textContent = s.host;
+  $("pill").className = "pill " + state;
+  $("pill").textContent = state;
+
+  const b = $("banner");
+  b.hidden = !(stale || s.state === "stopped");
+  if (stale) b.textContent = `No update for ${dur(age)} (expected every ${s.exportEveryMin} min). The run may have crashed, or the PC may have restarted or logged off.`;
+  else if (s.state === "stopped") b.textContent = "The run was stopped before reaching its stopping criteria.";
+
+  let progress = null, eta = NaN, cells = [];
+  const sweep = s.caseCount > 0;
+  $("caseline").hidden = !sweep;
+  if (sweep) {
+    $("caseline").innerHTML = `Case ${s.caseIndex}/${s.caseCount}` +
+      (s.caseLabel ? ` <span class="host">${esc(s.caseLabel)}</span>` : "");
+    const done = s.state === "finished" ? s.caseCount : s.caseIndex - 1;
+    progress = done / s.caseCount;
+    if (done > 0 && s.state === "running") eta = (s.updatedAt - s.startedAt) / 1000 / done * (s.caseCount - done);
+    cells.push(stat("Cases done", `${done} / ${s.caseCount}`));
+    cells.push(stat("Current case", `${(s.caseIteration ?? 0).toLocaleString()}` +
+      (s.caseMaxIterations > 0 ? ` / ${s.caseMaxIterations.toLocaleString()} it` : " it")));
+    cells.push(stat("Speed", s.itersPerSec > 0 ? `${(s.itersPerSec * 60).toFixed(1)} it/min` : "–"));
+  } else if (s.steady) {
+    cells.push(stat("Iteration", s.iteration.toLocaleString() + (s.maxSteps > 0 ? ` / ${s.maxSteps.toLocaleString()}` : "")));
+    if (s.maxSteps > 0) { progress = s.iteration / s.maxSteps; eta = (s.maxSteps - s.iteration) / s.itersPerSec; }
+    cells.push(stat("Speed", s.itersPerSec > 0 ? `${(s.itersPerSec * 60).toFixed(1)} it/min` : "–"));
+  } else {
+    cells.push(stat("Physical time", fmt(s.physicalTime) + " s" + (s.maxPhysicalTime > 0 ? ` / ${fmt(s.maxPhysicalTime)}` : "")));
+    if (s.maxPhysicalTime > 0) { progress = s.physicalTime / s.maxPhysicalTime; eta = (s.maxPhysicalTime - s.physicalTime) / s.simSecPerSec; }
+    cells.push(stat("Iteration", s.iteration.toLocaleString()));
+  }
+  if (progress !== null) cells.push(stat("Progress", (Math.min(progress, 1) * 100).toFixed(1) + "%"));
+  cells.push(stat(s.state === "running" ? "ETA" : "Ran for", s.state === "running" ? dur(eta) : dur((s.updatedAt - s.startedAt) / 1000)));
+  cells.push(stat("Last update", dur(age) === "0m" ? "just now" : dur(age) + " ago"));
+  $("stats").innerHTML = cells.join("");
+  $("barwrap").hidden = progress === null;
+  if (progress !== null) $("bar").style.width = Math.min(progress, 1) * 100 + "%";
+}
+
+function renderImages(el, folder, names, v) {
+  el.innerHTML = names.length ? names.map(n =>
+    `<figure><img loading="lazy" src="${folder}/${encodeURIComponent(safe(n))}.png?v=${v}" alt="${esc(n)}"><figcaption>${esc(n)}</figcaption></figure>`
+  ).join("") : `<p class="empty">None exported.</p>`;
+}
+
+async function renderPolar(s, v) {
+  $("polarsec").hidden = !s.polarCsv;
+  if (!s.polarCsv) return;
+  try {
+    const r = await fetch(`csv/${encodeURIComponent(safe(s.polarCsv))}.csv?v=${v}`);
+    if (!r.ok) throw 0;
+    const rows = (await r.text()).trim().split(/\r?\n/).map(l => l.split(",").map(c => c.replace(/^"|"$/g, "")));
+    if (rows.length < 2) throw 0;
+    const cell = c => { const x = Number(c); return c !== "" && isFinite(x) && !/^\d+$/.test(c) ? fmt(x) : esc(c); };
+    $("polar").innerHTML = `<div class="tablewrap"><table><thead><tr>${rows[0].map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>` +
+      rows.slice(1).map(r => `<tr>${r.map(c => `<td>${cell(c)}</td>`).join("")}</tr>`).join("") + `</tbody></table></div>`;
+  } catch (e) {
+    $("polar").innerHTML = `<p class="empty">No finished cases yet.</p>`;
+  }
+}
+
+async function renderTables(names, v, skip) {
+  const out = [];
+  for (const n of names) {
+    if (n === skip) continue;
+    try {
+      const txt = await (await fetch(`csv/${encodeURIComponent(safe(n))}.csv?v=${v}`)).text();
+      const rows = txt.trim().split(/\r?\n/).map(r => r.split(",").map(c => c.replace(/^"|"$/g, "")));
+      if (rows.length < 2) continue;
+      const head = rows[0], last = rows[rows.length - 1], prev = rows[Math.max(1, rows.length - 1 - 100)];
+      let body = "";
+      for (let i = 1; i < head.length; i++) {
+        const a = parseFloat(last[i]), p = parseFloat(prev[i]);
+        if (!isFinite(a)) continue;
+        let trend = "";
+        if (isFinite(p) && p !== 0 && rows.length > 2) {
+          const r = a / p;
+          trend = r < 0.98 ? `<span class="down">▼ ${fmt(r)}×</span>` : r > 1.02 ? `<span class="up">▲ ${fmt(r)}×</span>` : "≈";
+        }
+        body += `<tr><td>${esc(head[i])}</td><td>${fmt(a)}</td><td>${trend}</td></tr>`;
+      }
+      out.push(`<h3 style="font-size:.95rem;margin:14px 0 6px">${esc(n)} <span class="host">@ ${esc(head[0])} ${esc(last[0])}</span></h3>
+        <div class="tablewrap"><table><thead><tr><th>Quantity</th><th>Latest</th><th>vs ${rows.length - 1 - Math.max(1, rows.length - 1 - 100)} rows ago</th></tr></thead><tbody>${body}</tbody></table></div>`);
+    } catch (e) { /* skip unreadable csv */ }
+  }
+  $("tables").innerHTML = out.join("") || `<p class="empty">No monitor data yet.</p>`;
+}
+
+async function refresh() {
+  try {
+    const s = await (await fetch("status.json?t=" + Date.now(), {cache: "no-store"})).json();
+    const changed = !current || current.updatedAt !== s.updatedAt;
+    current = s;
+    renderStatus(s);
+    if (changed) {
+      renderImages($("plots"), "plots", s.plots, s.updatedAt);
+      renderImages($("scenes"), "scenes", s.scenes, s.updatedAt);
+      renderTables(s.csv, s.updatedAt, s.polarCsv);
+      renderPolar(s, s.updatedAt);
+    }
+  } catch (e) {
+    if (!current) { $("sim").textContent = "Waiting for first export…"; $("tables").innerHTML = ""; }
+  }
+}
+
+document.addEventListener("click", e => {
+  const z = $("zoom");
+  if (e.target.matches("figure img")) { z.querySelector("img").src = e.target.src; z.hidden = false; }
+  else if (!z.hidden) z.hidden = true;
+});
+refresh();
+setInterval(refresh, 60000);
+setInterval(() => current && renderStatus(current), 15000);
+</script>
+</body>
+</html>
